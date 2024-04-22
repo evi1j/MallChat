@@ -11,6 +11,7 @@ import com.abin.mallchat.common.chat.domain.entity.*;
 import com.abin.mallchat.common.chat.domain.enums.MessageMarkActTypeEnum;
 import com.abin.mallchat.common.chat.domain.enums.MessageTypeEnum;
 import com.abin.mallchat.common.chat.domain.vo.request.*;
+import com.abin.mallchat.common.chat.domain.vo.request.member.MemberReq;
 import com.abin.mallchat.common.chat.domain.vo.response.ChatMemberListResp;
 import com.abin.mallchat.common.chat.domain.vo.response.ChatMemberStatisticResp;
 import com.abin.mallchat.common.chat.domain.vo.response.ChatMessageReadResp;
@@ -41,7 +42,6 @@ import com.abin.mallchat.common.user.domain.enums.RoleEnum;
 import com.abin.mallchat.common.user.domain.vo.response.ws.ChatMemberResp;
 import com.abin.mallchat.common.user.service.IRoleService;
 import com.abin.mallchat.common.user.service.cache.UserCache;
-import com.abin.mallchat.transaction.service.MQProducer;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.BeanUtils;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -52,7 +52,6 @@ import org.springframework.transaction.annotation.Transactional;
 
 import javax.annotation.Nullable;
 import java.util.*;
-import java.util.function.Function;
 import java.util.stream.Collectors;
 
 /**
@@ -95,7 +94,7 @@ public class ChatServiceImpl implements ChatService {
     @Autowired
     private RoomGroupCache roomGroupCache;
     @Autowired
-    private MQProducer mqProducer;
+    private RoomGroupDao roomGroupDao;
 
     /**
      * 发送消息
@@ -141,7 +140,7 @@ public class ChatServiceImpl implements ChatService {
     }
 
     @Override
-    public CursorPageBaseResp<ChatMemberResp> getMemberPage(List<Long> memberUidList, CursorPageBaseReq request) {
+    public CursorPageBaseResp<ChatMemberResp> getMemberPage(List<Long> memberUidList, MemberReq request) {
         Pair<ChatActiveStatusEnum, String> pair = ChatMemberHelper.getCursorPair(request.getCursor());
         ChatActiveStatusEnum activeStatusEnum = pair.getKey();
         String timeCursor = pair.getValue();
@@ -164,6 +163,11 @@ public class ChatServiceImpl implements ChatService {
             timeCursor = cursorPage.getCursor();
             isLast = cursorPage.getIsLast();
         }
+        // 获取群成员角色ID
+        List<Long> uidList = resultList.stream().map(ChatMemberResp::getUid).collect(Collectors.toList());
+        RoomGroup roomGroup = roomGroupDao.getByRoomId(request.getRoomId());
+        Map<Long, Integer> uidMapRole = groupMemberDao.getMemberMapRole(roomGroup.getId(), uidList);
+        resultList.forEach(member -> member.setRoleId(uidMapRole.get(member.getUid())));
         //组装结果
         return new CursorPageBaseResp<>(ChatMemberHelper.generateCursor(activeStatusEnum, timeCursor), isLast, resultList);
     }
@@ -301,15 +305,9 @@ public class ChatServiceImpl implements ChatService {
         if (CollectionUtil.isEmpty(messages)) {
             return new ArrayList<>();
         }
-        Map<Long, Message> replyMap = new HashMap<>();
-        //批量查出回复的消息
-        List<Long> replyIds = messages.stream().map(Message::getReplyMsgId).filter(Objects::nonNull).distinct().collect(Collectors.toList());
-        if (CollectionUtil.isNotEmpty(replyIds)) {
-            replyMap = messageDao.listByIds(replyIds).stream().collect(Collectors.toMap(Message::getId, Function.identity()));
-        }
         //查询消息标志
         List<MessageMark> msgMark = messageMarkDao.getValidMarkByMsgIdBatch(messages.stream().map(Message::getId).collect(Collectors.toList()));
-        return MessageAdapter.buildMsgResp(messages, replyMap, msgMark, receiveUid);
+        return MessageAdapter.buildMsgResp(messages, msgMark, receiveUid);
     }
 
 }
